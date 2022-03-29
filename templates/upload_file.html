@@ -1,0 +1,28 @@
+<!doctype HTML>
+<html>
+    <head>
+        <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
+        <meta charset="utf-8">
+        <title>Excel File Uploader</title>
+    </head>
+    <body>
+        <div id="content">
+             <form id="file_upload_form" class="modal-content" action="/upload/file" method="post" enctype="multipart/form-data">
+
+              <div class="container">
+                <label for="file"><b>Accepted Formats: (.csv, .json)</b></label>
+                <input type="file" placeholder="Enter File's GCI URI" name="file" required>
+                <br />
+
+                <br />
+                <br />
+                <button type="submit">Submit</button>
+              </div>
+             </form>
+            <p>{{message}}</p>
+
+
+            <br />
+        </div>
+    </body>
+</html>
