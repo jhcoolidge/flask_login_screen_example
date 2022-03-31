@@ -1,0 +1,31 @@
+[
+    {
+        "name": "Brad",
+        "id": 394,
+        "salary_in_k": 10.4,
+        "phonenumber": "8288884444"
+    },
+    {
+        "name": "john",
+        "id": 395,
+        "salary_in_k": 8.6
+    },
+    {
+        "name": "Qwao",
+        "id": "Marketing",
+        "salary_in_k": 7.3,
+        "phonenumber": "8288886666"
+    },
+    {
+        "name": "Marth",
+        "id": 397,
+        "salary_in_k": 11.05,
+        "phonenumber": "8288887777"
+    },
+    {
+        "name": "Hanna",
+        "id": 398,
+        "salary_in_k": 9.8,
+        "phonenumber": "8288888888"
+    }
+]

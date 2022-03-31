@@ -1,0 +1,27 @@
+{
+  "name": "MyClass",
+  "type": "array",
+  "namespace": "com.acme.avro",
+  "items": {
+    "name": "MyClass_record",
+    "type": "record",
+    "fields": [
+      {
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "name": "id",
+        "type": "int"
+      },
+      {
+        "name": "salary_in_k",
+        "type": "float"
+      },
+      {
+        "name": "phonenumber",
+        "type": "string"
+      }
+    ]
+  }
+}
