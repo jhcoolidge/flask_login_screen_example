@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>File Transfer</title>
+<head>
+<body style="background-color:rgb(114, 114, 108)">
+    <div>
+        {% if message %}
+            <p class=message><strong>Message:</strong> {{ message }}
+        {% endif %}
+        <form method=post enctype=multipart/form-data>
+            <label>File Transfer</label><br>
+            <input type ="file" name = "file"><br><br>
+            <input type="submit" value="SUBMIT"><br><br>
+        </form>
+        <style>
+            div{
+                background-color: blanchedalmond;
+                font-size:xx-large;
+                position: absolute;
+                top: 40%;
+                left: 40%;
+            }
+        </style>
+    </div>
+</body>
+</body>
+</html>
