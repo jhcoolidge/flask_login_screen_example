@@ -1,0 +1,7 @@
+pyarrow
+pandas
+bcrypt
+flask
+docx
+google.cloud.bigquery
+google.oauth2.service_account
