@@ -12,7 +12,7 @@ def read_file(file):
     file_extension = file.filename.split('.')[-1]
 
     if file_extension.lower() == "csv":
-        file_dataframe = pandas.read_csv(file, on_bad_lines="skip")
+        file_dataframe = pandas.read_csv(file)
     elif file_extension.lower() == "json":
         file_dataframe = pandas.read_json(file)
 

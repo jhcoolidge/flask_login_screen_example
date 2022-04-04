@@ -1,7 +1,17 @@
+import pandas as pd
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from file_handlers import is_allowed_file, read_file
+import docx
+from docx.shared import RGBColor
 import re
+
+try:
+    error_doc = docx.Document("error_logs.docx")
+except:
+    error_doc = docx.Document()
+    error_doc.save("error_logs.docx")
+    print("Previous file was corrupted or didn't exist - new file was created.")
 
 # -----------------------------------------------------------------------------------------
 # SETUP BIGQUERY
@@ -95,26 +105,86 @@ def upload_data_from_file(file):
         except Exception as e:
             message = "Upload was not successful: " + str(e)
     else:
-        message = "File is not currently able to be handled by the program. Accepted formats: csv, json"
+        message = "File is not currently able to be handled by the program. Accepted format: csv"
 
     return message
 
 
 # Get bad rows and write them to a file
 def get_bad_rows_from_errors(errors, file_dataframe):
+    paragraph = error_doc.add_paragraph()
+    paragraph.alignment = 0
 
+    row_number_index = 0
     for error_index, error in enumerate(errors):
-        error_value = re.findall("'\D*'", error['message'])[0][1:-1]
+
+        # Find value which caused the error
+        error_value = re.findall(r"'(.*?)'", error['message'])[0]
+
+        # Find the values in the row containing the erroneous value and get the row number
         found_error_records = file_dataframe[file_dataframe.isin([error_value]).any(axis=1)].values
-        with open("error_logs.txt", "a") as f:
-            for record in found_error_records:
-                log_string = """
+        row_numbers = file_dataframe[file_dataframe.isin([error_value]).any(axis=1)].index
+
+        # Cycle trough all rows with the value that threw the error (if there are multiple)
+        for record in found_error_records:
+
+            # Format the string to be printed to the docx
+            error_string = """
+            ******************************************
+            Error # - {} Error Message - {}
+            Row # {}
+            """.format(error_index, error['message'], row_numbers[row_number_index] + 1)
+            row_number_index += 1
+
+            # Write the log to the paragraph
+            paragraph.add_run(error_string)
+
+            # Cycle through each value in the record to apply a specific font color to each one.
+            for value in record:
+                run = paragraph.add_run("| {}, ".format(str(value)))
+                if value == error_value:
+                    run.font.color.rgb = RGBColor(255, 0, 0)  # Red color
+                else:
+                    run.font.color.rgb = RGBColor(0, 0, 0)  # Black color
+
+            # End the error log
+            paragraph.add_run("\n******************************************")
+
+        row_number_index = 0
+
+    # Get all the rows containing null values in required columns and get their row numbers
+    null_record_dataframe = file_dataframe[file_dataframe.isna().any(axis=1)].values
+    null_record_row_numbers = file_dataframe[file_dataframe.isna().any(axis=1)].index
+
+    null_row_number_index = 0
+
+    # Cycle trough all records found having a null value
+    for record in null_record_dataframe:
+
+        # Format the error string
+        error_string = """
                 ******************************************
-                Error # - {} Error Message - {}
-                Inputted Data - {}
-                ******************************************
-                """.format(error_index, error['message'], record)
-                f.write(log_string)
+                Null values found in required columns
+                Row # {}
+                """.format(null_record_row_numbers[null_row_number_index] + 1)
+        null_row_number_index += 1
+
+        # Write the error string to the docx
+        paragraph.add_run(error_string)
+
+        # Cycle through the values in the record to apply color
+        for value in record:
+            run = paragraph.add_run("| {}, ".format(str(value)))
+            if pd.isnull(value):
+                run.font.color.rgb = RGBColor(255, 0, 0)  # Red color
+            else:
+                run.font.color.rgb = RGBColor(0, 0, 0)  # Black color
+
+        # End the error string
+        paragraph.add_run("\n******************************************")
+
+    # Save the final document
+    error_doc.save("error_logs.docx")
 
 
 # Setup BQ job configuration
