@@ -86,9 +86,8 @@ data_schema = spark_session.read.format('bigquery').option('table', 'uploaded_da
 
 required_columns = find_required_columns(data_schema.schema)
 
-# TODO: Enter your bucket ID here
 # Use this bucket as the uploaded files will go here
-bucket_name = ""
+bucket_name = "example-data-111999"
 
 # Temporary file name until Cloud Functions update
 file_name = "gs://{}/bad_data.csv".format(bucket_name)
@@ -99,18 +98,41 @@ name = file_name.split('/')[-1].split('.')[0]
 spark_session.conf.set('temporaryGcsBucket', bucket_name)
 
 # Read the file data in with the given schema. Drop any rows that do not match the datatypes.
-file_data = spark_session.read \
-              .format("csv") \
-              .option("header", True) \
-              .option("inferSchema", False) \
-              .schema(data_schema.schema) \
-              .option('mode', 'DROPMALFORMED') \
-              .load(file_name)
+
+file_extension = file_name.split('.')[-1]
+if file_extension == "csv":
+    file_data = spark_session.read \
+        .format("csv") \
+        .option("header", True) \
+        .option("inferSchema", False) \
+        .schema(data_schema.schema) \
+        .option('mode', 'DROPMALFORMED') \
+        .load(file_name)
+elif file_extension == "json":
+    file_data = spark_session.read \
+        .schema(data_schema.schema) \
+        .option("mode", "DROPMALFORMED") \
+        .option("multiline", True) \
+        .json(file_name)
+elif file_extension == "avro":
+    file_data = spark_session.read\
+        .format("com.databricks.spark.avro") \
+        .option("inferSchema", False) \
+        .schema(data_schema.schema) \
+        .option("mode", "DROPMALFORMED") \
+        .load(file_name)
+else:
+    print("File extension could not be handled by program. Supported extensions: csv, json, avro")
+    exit()
+
+file_data.show()
 
 # Drop rows which cannot be null in BQ. Can be configured for specific columns instead of any column.
 file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(data_schema.schema)
 
-# file_data.show()
+file_data.show()
+
+num_good_rows = file_data.count()
 
 # Write the good records to BQ and overwrite anything that is there.
 file_data.write.format('bigquery') \
@@ -124,19 +146,28 @@ bad_record_data = spark_session.read \
                   .option("header", True) \
                   .load(file_name)
 
-# bad_record_data.show()
+bad_record_data.show()
+
+num_total_rows = bad_record_data.count()
 
 # Join the dataframes where the bad records emp id is NOT present in the good records dataframe.
 # This assumes that emp id is a primary key and is therefore unique
 bad_record_data = bad_record_data.alias("bad_record_data")
 file_data = file_data.alias("file_data")
 
+if required_columns:
+    column_to_join = required_columns[0]
+else:
+    column_to_join = data_schema.schema.json()["fields"][0]["name"]
+
 bad_records = file_data \
-    .join(bad_record_data, on=file_data.emp_id == bad_record_data.emp_id, how="right") \
-    .where(isnull(file_data.emp_id)) \
+    .join(bad_record_data, on=column_to_join, how="right") \
+    .where(isnull(file_data[column_to_join])) \
     .select('bad_record_data.*')
 
-# bad_records.show()
+bad_records.show()
+
+num_bad_rows = bad_records.count()
 
 # Add the error_message column with everything the column has wrong
 bad_records = add_error_message(bad_records, schema=data_schema.schema)
@@ -151,3 +182,11 @@ bad_records.coalesce(1).write \
     .format("com.databricks.spark.csv") \
     .option('header', True) \
     .csv(log_file_path)
+
+
+print("""
+Total Num of Rows: {}
+Num Good Rows: {}
+Num Bad Rows : {}
+Num Rows Missing : {}
+""".format(num_total_rows, num_good_rows, num_bad_rows, int(num_total_rows - num_good_rows - num_bad_rows)))
