@@ -4,6 +4,8 @@ import datetime
 import json
 import sys
 
+start_time = datetime.datetime.now()
+
 # -----------------------------------------------------------------------------------------
 # SPARK SESSION SETUP
 # -----------------------------------------------------------------------------------------
@@ -90,7 +92,7 @@ required_columns = find_required_columns(data_schema.schema)
 bucket_name = "example-data-111999"
 
 # Temporary file name until Cloud Functions update
-file_name = "gs://{}/bad_data.csv".format(bucket_name)
+file_name = "gs://{}/big_data.csv".format(bucket_name)
 name = file_name.split('/')[-1].split('.')[0]
 
 
@@ -106,20 +108,19 @@ if file_extension == "csv":
         .option("header", True) \
         .option("inferSchema", False) \
         .schema(data_schema.schema) \
-        .option('mode', 'DROPMALFORMED') \
-        .load(file_name)
+        .csv(file_name)
 elif file_extension == "json":
     file_data = spark_session.read \
         .schema(data_schema.schema) \
-        .option("mode", "DROPMALFORMED") \
-        .option("multiline", True) \
+        .option("multiline", True)\
+        .option("mode","DROPMALFORMED") \
         .json(file_name)
 elif file_extension == "avro":
     file_data = spark_session.read\
         .format("com.databricks.spark.avro") \
         .option("inferSchema", False) \
         .schema(data_schema.schema) \
-        .option("mode", "DROPMALFORMED") \
+        .option("mode","DROPMALFORMED") \
         .load(file_name)
 else:
     print("File extension could not be handled by program. Supported extensions: csv, json, avro")
@@ -128,7 +129,7 @@ else:
 file_data.show()
 
 # Drop rows which cannot be null in BQ. Can be configured for specific columns instead of any column.
-file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(data_schema.schema)
+# file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(data_schema.schema)
 
 file_data.show()
 
@@ -158,10 +159,12 @@ file_data = file_data.alias("file_data")
 if required_columns:
     column_to_join = required_columns[0]
 else:
-    column_to_join = data_schema.schema.json()["fields"][0]["name"]
+    column_to_join = json.loads(data_schema.schema.json())["fields"][0]["name"]
+
+print(column_to_join)
 
 bad_records = file_data \
-    .join(bad_record_data, on=column_to_join, how="right") \
+    .join(bad_record_data, on=file_data[column_to_join] == bad_record_data[column_to_join], how="right") \
     .where(isnull(file_data[column_to_join])) \
     .select('bad_record_data.*')
 
@@ -169,19 +172,20 @@ bad_records.show()
 
 num_bad_rows = bad_records.count()
 
-# Add the error_message column with everything the column has wrong
-bad_records = add_error_message(bad_records, schema=data_schema.schema)
+if num_bad_rows > 0:
+    # Add the error_message column with everything the column has wrong
+    bad_records = add_error_message(bad_records, schema=data_schema.schema)
 
-# Get a timestamp for the folder containing the logs
-timestamp = datetime.datetime.now()
-readable_timestamp = timestamp.strftime("%d-%m-%Y-%H-%M-%S")
-log_file_path = "gs://{}/logs/{}-{}-{}".format(bucket_name, name, 'bad_records', str(readable_timestamp))
+    # Get a timestamp for the folder containing the logs
+    timestamp = datetime.datetime.now()
+    readable_timestamp = timestamp.strftime("%d-%m-%Y-%H-%M-%S")
+    log_file_path = "gs://{}/logs/{}-{}-{}".format(bucket_name, name, 'bad_records', str(readable_timestamp))
 
-# Coalesce and stop parallel writing of CSV files into one single file
-bad_records.coalesce(1).write \
-    .format("com.databricks.spark.csv") \
-    .option('header', True) \
-    .csv(log_file_path)
+    # Coalesce and stop parallel writing of CSV files into one single file
+    bad_records.coalesce(1).write \
+        .format("com.databricks.spark.csv") \
+        .option('header', True) \
+        .csv(log_file_path)
 
 
 print("""
@@ -190,3 +194,8 @@ Num Good Rows: {}
 Num Bad Rows : {}
 Num Rows Missing : {}
 """.format(num_total_rows, num_good_rows, num_bad_rows, int(num_total_rows - num_good_rows - num_bad_rows)))
+
+
+end_time = datetime.datetime.now()
+
+print("The program took {} to execute.".format(end_time - start_time))
