@@ -1,10 +1,11 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import isnull
+from pyspark.sql import SparkSession, Window
+from pyspark.sql.functions import isnull, col, lit, row_number
 import datetime
 import json
-import sys
 
 # Get the time when the program started
+from pyspark.sql.types import _parse_datatype_string, _infer_type, StructType, StructField, IntegerType
+
 start_time = datetime.datetime.now()
 
 # -----------------------------------------------------------------------------------------
@@ -32,47 +33,72 @@ def find_required_columns(schema):
 
 
 def add_error_message(df, schema):
-    collected_data = df.collect()
     new_rows = []
     order = []
     fields = json.loads(schema.json())
     fields = fields["fields"]
 
-    field_types = {'long': int, 'string': str}
+    for row_index, row in enumerate(df.collect()):
+        row = row.asDict()
+        row["_row_number"] = row_index
+        new_rows.append(row)
+
+    _new_schema = StructType(df.schema.fields + [StructField("_row_number", IntegerType(), False)])
+    df_with_row_numbers = spark_session.createDataFrame(new_rows, _new_schema)
+    new_rows = []
+
+    collected_data = df_with_row_numbers.collect()
 
     # Append the headers in log file
     for field in fields:
         order.append(field['name'])
     order.append('error_message')
 
-    for row in collected_data:
+    for row_index, row in enumerate(collected_data):
         # Convert from PySpark SQL Row to list of Dicts
+        print("Row number df")
+        df_with_row_numbers.show()
+
+        print("Row to work with")
+        datatype_check_row = df_with_row_numbers.where(df_with_row_numbers["_row_number"] == row_index)
+        datatype_check_row.show()
+
+        print("Row as dictionary to create new df")
         row = row.asDict()
+        print(row)
 
         error_message = ""
         for field_index, field in enumerate(fields):
             column_name = field['name']
 
-            # Attempt converting all data into an int or float, unless it has letters
-            if row[column_name] is not None:
-                try:
-                    if row[column_name].isdigit():
-                        row[column_name] = int(row[column_name])
-                    else:
-                        row[column_name] = float(row[column_name])
-                # This will occur if the string has letters, which is fine and we can skip
-                except ValueError:
-                    pass
-
             # Find if row needs a value
             if not field['nullable'] and row[column_name] is None:
+                print("Null error")
                 error_message += "Error: Row has a null value at {} when column is required. "\
                     .format(column_name)
 
-            # Check if datatype does not match.
-            elif field_types[field['type']] != type(row[column_name]) and row[column_name] is not None:
-                error_message += "Error: '{}' at column {} should be type {} but was type {} instead. "\
-                    .format(row[column_name], column_name, field['type'], type(row[column_name]).__name__)
+            if row[column_name] is not None:
+                value_before_check = datatype_check_row.collect()[0].asDict()[column_name]
+                print(value_before_check)
+                casted_row = datatype_check_row.withColumn(column_name, col(column_name).cast(field["type"]))
+                casted_row.show()
+                value_checked = casted_row.collect()[0].asDict()[column_name]
+                print(value_checked)
+
+                # Check if datatype does not match.
+                if value_checked is None:
+                    print("Bad datatype error")
+                    error_message += "Error: '{}' at column {} should be type {} but was type {} instead. "\
+                        .format(row[column_name],
+                                column_name,
+                                _parse_datatype_string(field['type']),
+                                _infer_type(type(row[column_name]).__name__))
+                # Check if a float was changed at all as it will not return None, only truncate decimals
+                elif str(value_checked) != str(value_before_check):
+                    print("Float error")
+                    error_message += "Error: {} at column {} should be type Integer but was type Float instead. " \
+                        .format(row[column_name],
+                                column_name)
 
             # Convert the datatype back to string to help create dataframe again
             if row[column_name] is not None:
@@ -146,10 +172,10 @@ file_data.show()
 num_good_rows = file_data.count()
 
 # Write the good records to BQ and overwrite anything that is there.
-file_data.write.format('bigquery') \
-    .option('table', 'uploaded_data.{}'.format(table_name)) \
-    .mode("overwrite") \
-    .save()
+# file_data.write.format('bigquery') \
+#     .option('table', 'uploaded_data.{}'.format(table_name)) \
+#     .mode("overwrite") \
+#     .save()
 
 # Read the file but do not drop any records. Do not load pre-defined schema either.
 bad_record_data = spark_session.read \
