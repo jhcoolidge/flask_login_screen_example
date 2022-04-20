@@ -1,11 +1,11 @@
-from pyspark.sql import SparkSession, Window
-from pyspark.sql.functions import isnull, col, lit, row_number
+from pyspark.sql import SparkSession
+from pyspark.sql.types import _parse_datatype_string, _infer_type, StructType, StructField, IntegerType
+from pyspark.sql.functions import isnull, col
 import datetime
 import json
 
-# Get the time when the program started
-from pyspark.sql.types import _parse_datatype_string, _infer_type, StructType, StructField, IntegerType
 
+# Get the time when the program started
 start_time = datetime.datetime.now()
 
 # -----------------------------------------------------------------------------------------
@@ -33,20 +33,24 @@ def find_required_columns(schema):
 
 
 def add_error_message(df, schema):
+    # Arrange variables needed by function.
     new_rows = []
     order = []
     fields = json.loads(schema.json())
     fields = fields["fields"]
 
+    # Assign row numbers that do not change with the order of the rows.
+    # NOTE: ROW_NUMBER() DOES NOT WORK HERE. THE NUMBERS WILL CHANGE BASED ON THE ORDER OF THE ROWS.
     for row_index, row in enumerate(df.collect()):
         row = row.asDict()
         row["_row_number"] = row_index
         new_rows.append(row)
 
+    # Recast the data back into a dataframe with the row numbers as a new column
     _new_schema = StructType(df.schema.fields + [StructField("_row_number", IntegerType(), False)])
     df_with_row_numbers = spark_session.createDataFrame(new_rows, _new_schema)
-    new_rows = []
 
+    # Collect the new data to iterate through.
     collected_data = df_with_row_numbers.collect()
 
     # Append the headers in log file
@@ -54,40 +58,40 @@ def add_error_message(df, schema):
         order.append(field['name'])
     order.append('error_message')
 
+    # Empty the new rows variable for more rows.
+    new_rows = []
     for row_index, row in enumerate(collected_data):
         # Convert from PySpark SQL Row to list of Dicts
-        print("Row number df")
-        df_with_row_numbers.show()
-
-        print("Row to work with")
-        datatype_check_row = df_with_row_numbers.where(df_with_row_numbers["_row_number"] == row_index)
-        datatype_check_row.show()
-
-        print("Row as dictionary to create new df")
         row = row.asDict()
-        print(row)
 
+        # Get the current row as a dataframe object to attempt to cast the fields to their respective data types
+        datatype_check_row = df_with_row_numbers.where(df_with_row_numbers["_row_number"] == row_index)
+
+        # Error message can contain multiple errors per row
         error_message = ""
         for field_index, field in enumerate(fields):
+            # Get the current field's name
             column_name = field['name']
 
             # Find if row needs a value
             if not field['nullable'] and row[column_name] is None:
-                print("Null error")
                 error_message += "Error: Row has a null value at {} when column is required. "\
                     .format(column_name)
 
+            # Skip for all None values, no point in doing below code for None
             if row[column_name] is not None:
+                # Get the value before casting
                 value_before_check = datatype_check_row.collect()[0].asDict()[column_name]
-                print(value_before_check)
-                casted_row = datatype_check_row.withColumn(column_name, col(column_name).cast(field["type"]))
-                casted_row.show()
-                value_checked = casted_row.collect()[0].asDict()[column_name]
-                print(value_checked)
 
-                # Check if datatype does not match.
+                # Cast the current column to what it should be
+                casted_row = datatype_check_row.withColumn(column_name, col(column_name).cast(field["type"]))
+
+                # Get the value after casting. If it is None, the casting failed.
+                # NOTE: Floats will truncate their decimals if casted to Int and will not return None.
+                value_checked = casted_row.collect()[0].asDict()[column_name]
+
+                # Check if datatype casting has succeeded, which will only work for intended values
                 if value_checked is None:
-                    print("Bad datatype error")
                     error_message += "Error: '{}' at column {} should be type {} but was type {} instead. "\
                         .format(row[column_name],
                                 column_name,
@@ -95,7 +99,6 @@ def add_error_message(df, schema):
                                 _infer_type(type(row[column_name]).__name__))
                 # Check if a float was changed at all as it will not return None, only truncate decimals
                 elif str(value_checked) != str(value_before_check):
-                    print("Float error")
                     error_message += "Error: {} at column {} should be type Integer but was type Float instead. " \
                         .format(row[column_name],
                                 column_name)
@@ -115,6 +118,7 @@ def add_error_message(df, schema):
     bad_data_with_error = bad_data_with_error.select(order)
     bad_data_with_error.show()
 
+    # Return the dataframe with error to be written to the log file.
     return bad_data_with_error
 
 
@@ -166,16 +170,16 @@ else:
 # Drop rows which cannot be null in BQ. Can be configured for specific columns instead of any column.
 file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(data_schema.schema)
 
-file_data.show()
+# file_data.show()
 
 # Get the number of good rows after processing out bad ones
 num_good_rows = file_data.count()
 
 # Write the good records to BQ and overwrite anything that is there.
-# file_data.write.format('bigquery') \
-#     .option('table', 'uploaded_data.{}'.format(table_name)) \
-#     .mode("overwrite") \
-#     .save()
+file_data.write.format('bigquery') \
+    .option('table', 'uploaded_data.{}'.format(table_name)) \
+    .mode("overwrite") \
+    .save()
 
 # Read the file but do not drop any records. Do not load pre-defined schema either.
 bad_record_data = spark_session.read \
@@ -205,7 +209,7 @@ bad_records = file_data \
     .where(isnull(file_data[column_to_join])) \
     .select('bad_record_data.*')
 
-bad_records.show()
+# bad_records.show()
 
 # Get the number of bad rows after processing
 num_bad_rows = bad_records.count()
