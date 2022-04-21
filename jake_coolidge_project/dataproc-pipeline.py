@@ -66,6 +66,7 @@ def add_error_message(df, schema):
 
         # Get the current row as a dataframe object to attempt to cast the fields to their respective data types
         datatype_check_row = df_with_row_numbers.where(df_with_row_numbers["_row_number"] == row_index)
+        print(datatype_check_row)
 
         # Error message can contain multiple errors per row
         error_message = ""
@@ -82,13 +83,16 @@ def add_error_message(df, schema):
             if row[column_name] is not None:
                 # Get the value before casting
                 value_before_check = datatype_check_row.collect()[0].asDict()[column_name]
+                print(value_before_check)
 
                 # Cast the current column to what it should be
                 casted_row = datatype_check_row.withColumn(column_name, col(column_name).cast(field["type"]))
+                print(casted_row)
 
                 # Get the value after casting. If it is None, the casting failed.
                 # NOTE: Floats will truncate their decimals if casted to Int and will not return None.
                 value_checked = casted_row.collect()[0].asDict()[column_name]
+                print(value_checked)
 
                 # Check if datatype casting has succeeded, which will only work for intended values
                 if value_checked is None:
@@ -98,7 +102,7 @@ def add_error_message(df, schema):
                                 _parse_datatype_string(field['type']),
                                 _infer_type(type(row[column_name]).__name__))
                 # Check if a float was changed at all as it will not return None, only truncate decimals
-                elif str(value_checked) != str(value_before_check):
+                elif str(value_checked).lower() != str(value_before_check).lower():
                     error_message += "Error: {} at column {} should be type Integer but was type Float instead. " \
                         .format(row[column_name],
                                 column_name)
@@ -133,7 +137,7 @@ required_columns = find_required_columns(data_schema.schema)
 bucket_name = "example-data-111999"
 
 # Temporary file name until Cloud Functions update
-file_name = "gs://{}/bad_data.csv".format(bucket_name)
+file_name = "gs://{}/big_data.csv".format(bucket_name)
 name = file_name.split('/')[-1].split('.')[0]
 
 
@@ -148,20 +152,20 @@ if file_extension == "csv":
         .option("header", True) \
         .option("inferSchema", False) \
         .schema(data_schema.schema) \
-        .option("mode","DROPMALFORMED") \
+        .option("mode", "FAILFAST") \
         .csv(file_name)
 elif file_extension == "json":
     file_data = spark_session.read \
         .schema(data_schema.schema) \
         .option("multiline", True)\
-        .option("mode","DROPMALFORMED") \
+        .option("mode", "DROPMALFORMED") \
         .json(file_name)
 elif file_extension == "avro":
     file_data = spark_session.read\
         .format("com.databricks.spark.avro") \
         .option("inferSchema", False) \
         .schema(data_schema.schema) \
-        .option("mode","DROPMALFORMED") \
+        .option("mode", "DROPMALFORMED") \
         .load(file_name)
 else:
     print("File extension could not be handled by program. Supported extensions: csv, json, avro")
@@ -170,7 +174,7 @@ else:
 # Drop rows which cannot be null in BQ. Can be configured for specific columns instead of any column.
 file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(data_schema.schema)
 
-# file_data.show()
+file_data.show()
 
 # Get the number of good rows after processing out bad ones
 num_good_rows = file_data.count()
@@ -209,7 +213,7 @@ bad_records = file_data \
     .where(isnull(file_data[column_to_join])) \
     .select('bad_record_data.*')
 
-# bad_records.show()
+bad_records.show()
 
 # Get the number of bad rows after processing
 num_bad_rows = bad_records.count()
