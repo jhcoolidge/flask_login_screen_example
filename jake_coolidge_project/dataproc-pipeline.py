@@ -1,9 +1,29 @@
+from google.oauth2 import service_account
+from google.cloud import bigquery
 from pyspark.sql import SparkSession
 from pyspark.sql.types import _parse_datatype_string, _infer_type, StructType, StructField, IntegerType
-from pyspark.sql.functions import isnull, col
+from pyspark.sql.functions import isnull, col, length, round
 import datetime
 import json
+import os
+import io
 
+key_path = 'C:\\Users\\jhcoo\\PycharmProjects\\FlaskLoginScreen\\bigquerykey.json'
+credentials = service_account.Credentials.from_service_account_file(
+    key_path, scopes=["https://www.googleapis.com/auth/cloud-platform"],
+)
+
+bq_client = bigquery.Client(credentials=credentials, project=credentials.project_id)
+
+project_id = "regal-stage-343104"
+dataset_id = "uploaded_data"
+table_name = 'dataproc_upload'
+
+dataset_ref = bq_client.get_dataset(dataset_id)
+table_ref = dataset_ref.table(table_name)
+table = bq_client.get_table(table_ref)
+
+os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
 
 # Get the time when the program started
 start_time = datetime.datetime.now()
@@ -126,7 +146,21 @@ def add_error_message(df, schema):
     return bad_data_with_error
 
 
-table_name = 'dataproc_upload'
+def limit_column_lengths(schema, file_dataframe):
+
+    for field in schema:
+        if field["maxLength"]:
+            file_dataframe = file_dataframe.where(length(col(field["name"])) <= field["maxLength"])
+
+        # Not sure what precision refers to
+        # if field["precision"]:
+        #     file_dataframe = file_dataframe.where(col(field["name"]) >= 2 ** field["precision"])
+
+        if field["scale"]:
+            file_dataframe = file_dataframe.withColumn(field["name"], round(field["name"], field["scale"]))
+
+    return file_dataframe
+
 
 # Read the schema from the BigQuery table
 data_schema = spark_session.read.format('bigquery').option('table', 'uploaded_data.{}'.format(table_name)).load()
@@ -152,7 +186,7 @@ if file_extension == "csv":
         .option("header", True) \
         .option("inferSchema", False) \
         .schema(data_schema.schema) \
-        .option("mode", "FAILFAST") \
+        .option("mode", "DROPMALFORMED") \
         .csv(file_name)
 elif file_extension == "json":
     file_data = spark_session.read \
@@ -175,6 +209,11 @@ else:
 file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(data_schema.schema)
 
 file_data.show()
+
+f = io.StringIO("")
+bq_client.schema_to_json(table.schema, f)
+file_data = limit_column_lengths(json.loads(f.getvalue()), file_data)
+
 
 # Get the number of good rows after processing out bad ones
 num_good_rows = file_data.count()
