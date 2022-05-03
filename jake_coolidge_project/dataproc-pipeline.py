@@ -8,12 +8,7 @@ import json
 import os
 import io
 
-key_path = 'C:\\Users\\jhcoo\\PycharmProjects\\FlaskLoginScreen\\bigquerykey.json'
-credentials = service_account.Credentials.from_service_account_file(
-    key_path, scopes=["https://www.googleapis.com/auth/cloud-platform"],
-)
-
-bq_client = bigquery.Client(credentials=credentials, project=credentials.project_id)
+bq_client = bigquery.Client()
 
 project_id = "regal-stage-343104"
 dataset_id = "uploaded_data"
@@ -44,11 +39,11 @@ spark_session = SparkSession \
 
 def find_required_columns(schema):
     required_columns_list = []
-    json_schema = json.loads(schema.json())
 
-    for field in json_schema["fields"]:
-        if not field['nullable']:
+    for field in schema:
+        if field["mode"].lower() == "required":
             required_columns_list.append(field['name'])
+
     return required_columns_list
 
 
@@ -148,30 +143,37 @@ def add_error_message(df, schema):
 
 def limit_column_lengths(schema, file_dataframe):
 
+    print(schema)
     for field in schema:
-        if field["maxLength"]:
+        if "maxLength" in field:
+            print("found max length for field " + field["name"])
             file_dataframe = file_dataframe.where(length(col(field["name"])) <= field["maxLength"])
 
         # Not sure what precision refers to
-        # if field["precision"]:
+        # if "precision" in field:
         #     file_dataframe = file_dataframe.where(col(field["name"]) >= 2 ** field["precision"])
 
-        if field["scale"]:
+        if "scale" in field:
+            print("found scale for field" + field["name"])
             file_dataframe = file_dataframe.withColumn(field["name"], round(field["name"], field["scale"]))
 
+    file_dataframe.show()
     return file_dataframe
 
 
-# Read the schema from the BigQuery table
-data_schema = spark_session.read.format('bigquery').option('table', 'uploaded_data.{}'.format(table_name)).load()
+f = io.StringIO("")
+bq_client.schema_to_json(table.schema, f)
+data_schema = json.loads(f.getvalue())
+required_columns = find_required_columns(data_schema)
 
-required_columns = find_required_columns(data_schema.schema)
+print(data_schema)
+exit(1)
 
 # Use this bucket as the uploaded files will go here
 bucket_name = "example-data-111999"
 
 # Temporary file name until Cloud Functions update
-file_name = "gs://{}/big_data.csv".format(bucket_name)
+file_name = "gs://{}/bad_data.csv".format(bucket_name)
 name = file_name.split('/')[-1].split('.')[0]
 
 
@@ -185,12 +187,12 @@ if file_extension == "csv":
         .format("csv") \
         .option("header", True) \
         .option("inferSchema", False) \
-        .schema(data_schema.schema) \
+        .schema(table.schema) \
         .option("mode", "DROPMALFORMED") \
         .csv(file_name)
 elif file_extension == "json":
     file_data = spark_session.read \
-        .schema(data_schema.schema) \
+        .schema(table.schema) \
         .option("multiline", True)\
         .option("mode", "DROPMALFORMED") \
         .json(file_name)
@@ -198,7 +200,7 @@ elif file_extension == "avro":
     file_data = spark_session.read\
         .format("com.databricks.spark.avro") \
         .option("inferSchema", False) \
-        .schema(data_schema.schema) \
+        .schema(table.schema) \
         .option("mode", "DROPMALFORMED") \
         .load(file_name)
 else:
@@ -206,13 +208,11 @@ else:
     exit()
 
 # Drop rows which cannot be null in BQ. Can be configured for specific columns instead of any column.
-file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(data_schema.schema)
+file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(table.schema)
 
 file_data.show()
 
-f = io.StringIO("")
-bq_client.schema_to_json(table.schema, f)
-file_data = limit_column_lengths(json.loads(f.getvalue()), file_data)
+file_data = limit_column_lengths(data_schema, file_data)
 
 
 # Get the number of good rows after processing out bad ones
@@ -244,7 +244,7 @@ file_data = file_data.alias("file_data")
 if required_columns:
     column_to_join = required_columns[0]
 else:
-    column_to_join = json.loads(data_schema.schema.json())["fields"][0]["name"]
+    column_to_join = json.loads(f.getvalue())[0]["name"]
 
 
 bad_records = file_data \
@@ -259,7 +259,7 @@ num_bad_rows = bad_records.count()
 
 if num_bad_rows > 0:
     # Add the error_message column with everything the column has wrong
-    bad_records = add_error_message(bad_records, schema=data_schema.schema)
+    bad_records = add_error_message(bad_records, schema=table.schema)
 
     # Get a timestamp for the folder containing the logs
     timestamp = datetime.datetime.now()
