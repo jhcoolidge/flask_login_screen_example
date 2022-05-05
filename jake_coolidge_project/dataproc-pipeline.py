@@ -1,8 +1,7 @@
-from google.oauth2 import service_account
 from google.cloud import bigquery
 from pyspark.sql import SparkSession
 from pyspark.sql.types import _parse_datatype_string, _infer_type, StructType, StructField, IntegerType
-from pyspark.sql.functions import isnull, col, length, round
+from pyspark.sql.functions import isnull, col, length, round, monotonically_increasing_id
 import datetime
 import json
 import os
@@ -31,10 +30,6 @@ spark_session = SparkSession \
     .master("yarn") \
     .appName('pyspark-etl-example') \
     .getOrCreate()
-
-# Get the file name and table name from the command line arguments Works w/Cloud Functions
-# file_name = sys.argv[0]
-# table_name = sys.argv[1]
 
 
 def find_required_columns(schema):
@@ -98,16 +93,13 @@ def add_error_message(df, schema):
             if row[column_name] is not None:
                 # Get the value before casting
                 value_before_check = datatype_check_row.collect()[0].asDict()[column_name]
-                print(value_before_check)
 
                 # Cast the current column to what it should be
                 casted_row = datatype_check_row.withColumn(column_name, col(column_name).cast(field["type"]))
-                print(casted_row)
 
                 # Get the value after casting. If it is None, the casting failed.
                 # NOTE: Floats will truncate their decimals if casted to Int and will not return None.
                 value_checked = casted_row.collect()[0].asDict()[column_name]
-                print(value_checked)
 
                 # Check if datatype casting has succeeded, which will only work for intended values
                 if value_checked is None:
@@ -149,7 +141,7 @@ def limit_column_lengths(schema, file_dataframe):
             print("found max length for field " + field["name"])
             file_dataframe = file_dataframe.where(length(col(field["name"])) <= field["maxLength"])
 
-        # Not sure what precision refers to
+        # Not sure what precision refers to yet
         # if "precision" in field:
         #     file_dataframe = file_dataframe.where(col(field["name"]) >= 2 ** field["precision"])
 
@@ -162,12 +154,15 @@ def limit_column_lengths(schema, file_dataframe):
 
 
 f = io.StringIO("")
-bq_client.schema_to_json(table.schema, f)
-data_schema = json.loads(f.getvalue())
-required_columns = find_required_columns(data_schema)
 
-print(data_schema)
-exit(1)
+# Read the schema correctly. May not work correctly as Dataproc uses a different version of BigQuery connectors
+bq_client.schema_to_json(table.schema, f)
+
+# Convert the schema to JSON
+data_schema = json.loads(f.getvalue())
+
+# Find the required columns using the schema
+required_columns = find_required_columns(data_schema)
 
 # Use this bucket as the uploaded files will go here
 bucket_name = "example-data-111999"
@@ -175,7 +170,6 @@ bucket_name = "example-data-111999"
 # Temporary file name until Cloud Functions update
 file_name = "gs://{}/bad_data.csv".format(bucket_name)
 name = file_name.split('/')[-1].split('.')[0]
-
 
 # Below is REQUIRED for spark job to run on Dataproc cluster.
 spark_session.conf.set('temporaryGcsBucket', bucket_name)
@@ -188,32 +182,42 @@ if file_extension == "csv":
         .option("header", True) \
         .option("inferSchema", False) \
         .schema(table.schema) \
-        .option("mode", "DROPMALFORMED") \
+        .option("columnNameOfCorruptRecord", "_corrupted_record") \
         .csv(file_name)
 elif file_extension == "json":
     file_data = spark_session.read \
         .schema(table.schema) \
         .option("multiline", True)\
-        .option("mode", "DROPMALFORMED") \
+        .option("columnNameOfCorruptRecord", "_corrupted_record") \
         .json(file_name)
 elif file_extension == "avro":
     file_data = spark_session.read\
         .format("com.databricks.spark.avro") \
         .option("inferSchema", False) \
         .schema(table.schema) \
-        .option("mode", "DROPMALFORMED") \
+        .option("columnNameOfCorruptRecord", "_corrupted_record") \
         .load(file_name)
 else:
     print("File extension could not be handled by program. Supported extensions: csv, json, avro")
     exit()
 
+# Create unique IDs for each row without changing the data.
+file_data = file_data.withColumn("_idx", monotonically_increasing_id())
+
+# Create a copy of the dataframe and add aliases to use in SQL type queries
+file_data = file_data.alias("file_data")
+bad_data = file_data.alias("bad_data")
+
 # Drop rows which cannot be null in BQ. Can be configured for specific columns instead of any column.
 file_data = file_data.dropna('any', subset=required_columns).rdd.toDF(table.schema)
 
-file_data.show()
-
+# Limit string lengths and numeric/bignumeric precision and scale
 file_data = limit_column_lengths(data_schema, file_data)
 
+# Drop corrupted records
+file_data = file_data.filter(col("_corrupt_record").isNull)
+
+file_data.show()
 
 # Get the number of good rows after processing out bad ones
 num_good_rows = file_data.count()
@@ -224,42 +228,17 @@ file_data.write.format('bigquery') \
     .mode("overwrite") \
     .save()
 
-# Read the file but do not drop any records. Do not load pre-defined schema either.
-bad_record_data = spark_session.read \
-                  .format("csv") \
-                  .option("header", True) \
-                  .load(file_name)
 
-bad_record_data.show()
+# Join where the unique IDs are not present in the "Good rows" dataframe
+bad_data = file_data.join(bad_data, on=file_data["_idx"] == bad_data["_idx"], how="right").where(isnull(file_data["_idx"])).select("bad_data.*")
 
-# Get the total number of rows in the file
-num_total_rows = bad_record_data.count()
+# bad_data.show()
 
-# Join the dataframes where the bad records emp id is NOT present in the good records dataframe.
-# This assumes that emp id is a primary key and is therefore unique
-bad_record_data = bad_record_data.alias("bad_record_data")
-file_data = file_data.alias("file_data")
-
-# Join the columns with required columns, or the first one if there is none
-if required_columns:
-    column_to_join = required_columns[0]
-else:
-    column_to_join = json.loads(f.getvalue())[0]["name"]
-
-
-bad_records = file_data \
-    .join(bad_record_data, on=file_data[column_to_join] == bad_record_data[column_to_join], how="right") \
-    .where(isnull(file_data[column_to_join])) \
-    .select('bad_record_data.*')
-
-bad_records.show()
-
-# Get the number of bad rows after processing
-num_bad_rows = bad_records.count()
+num_bad_rows = bad_data.count()
 
 if num_bad_rows > 0:
     # Add the error_message column with everything the column has wrong
-    bad_records = add_error_message(bad_records, schema=table.schema)
+    bad_records = add_error_message(bad_data, schema=table.schema)
 
     # Get a timestamp for the folder containing the logs
     timestamp = datetime.datetime.now()
@@ -278,8 +257,7 @@ print("""
 Total Num of Rows: {}
 Num Good Rows: {}
 Num Bad Rows : {}
-Num Rows Missing : {}
-""".format(num_total_rows, num_good_rows, num_bad_rows, int(num_total_rows - num_good_rows - num_bad_rows)))
+""".format(str(num_bad_rows + num_good_rows), num_good_rows, num_bad_rows))
 
 
 # Record time after execution
